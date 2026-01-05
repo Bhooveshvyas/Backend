@@ -1,6 +1,6 @@
 // THIS IS SECOND METHOD TO HANDLE ASYNC ERRORS
 const asyncHandeler = (requestHandeler) => {
-    (req, res, next) => {
+    return (req, res, next) => {
         Promise.resolve(requestHandeler(req, res, next)).catch((error) => { next(error) });
     }
 }
