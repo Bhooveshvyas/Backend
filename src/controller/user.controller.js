@@ -1,11 +1,33 @@
 import { asyncHandeler } from '../utils/asyncHandeler.js'
 import { ApiError } from '../utils/ApiError.js'
-import User from '../models/user.model.js'
+import { User } from '../models/user.model.js'
 import { uploadOnCloudinary } from '../utils/cloudinary.js'
-import { createRef } from 'react'
 import { ApiResponse } from '../utils/ApiResponse.js'
 
+// HUM TOKENS KA METHOD ISLIE BANARHE HAI KYOKI BAR BAR USE HOGA YEH
+
+const generateAccessAndRefreshToken = async (userId) => {
+    try {
+        const user = await User.findById(userId)
+
+        const accessToken = user.generateAccessToken()
+        const refreshToken = user.generateRefreshToken()
+
+        user.refreshToken = refreshToken
+        await user.save({ validateBeforeSave: false });
+
+        return { accessToken, refreshToken }
+
+    } catch (error) {
+        throw new ApiError(500, "Somethign went wrong while generating access token.")
+    }
+}
+
+
 const registerUser = asyncHandeler(async (req, res) => {
+
+    console.log("REQ.FILES 👉", req.files);
+    console.log("REQ.FILE 👉", req.file);
     // WHAT ALL STEPS WILL BE THERE A USER WILL GET REGISTER?
     // 1.GET USERNAME FROM FRONTEND(ABI TO FROM POSTMAN).
     // 2.CHECK IF USER IS ALREADY REGISTERED OR NOT:VIA USERNAME/EMAIL.
@@ -16,14 +38,10 @@ const registerUser = asyncHandeler(async (req, res) => {
     // 7.CHECK FOR USER CREATION.
     // 8.RETURN RES.
 
-    const { email, fullname, password } = req.body;
-
-    // console.log(email);
-    // console.log(fullname);
-    // console.log(password);
+    const { email, fullName, password, userName } = req.body;
 
     if (
-        [fullname, email, password].some((field) =>
+        [fullName, email, password, userName].some((field) =>
             field?.trim() === ""
         )
     ) {
@@ -32,14 +50,17 @@ const registerUser = asyncHandeler(async (req, res) => {
 
     // User.findOne({email})//for single
 
-    const existedUser = User.findOne({
-        $or: [{ username }, { email }]
+    const existedUser = await User.findOne({
+        $or: [{ userName }, { email }]
     })
+
+    console.log(email);
+    console.log(fullName);
+    console.log(password);
 
     if (existedUser) {
         throw new ApiError(409, "User Already Exists.");
     }
-    console.log("AYA");
 
     // console.log(existedUser);
     // console.log(req.files);
@@ -47,27 +68,32 @@ const registerUser = asyncHandeler(async (req, res) => {
     // console.log();
 
 
-    const avatarLocalPath = req.files.avatar[0]?.path
-    const coverImageLocalPath = req.files.coverImage[0]?.path
+    const avatarLocalPath = req.files?.avatar?.[0]?.path
+    console.log("AYA");
+    const coverImageLocalPath = req.files?.coverImage?.[0]?.path
 
-    if (avatarLocalPath) {
+    if (!avatarLocalPath) {
         throw new ApiError(400, "Avatar File is Required!!!....")
     }
 
     const avatar = await uploadOnCloudinary(avatarLocalPath);
     const coverImage = await uploadOnCloudinary(coverImageLocalPath);
 
-    if (avatar) {
+    // const coverImage = coverImageLocalPath
+    //     ? await uploadOnCloudinary(coverImageLocalPath)
+    //     : null;
+
+    if (!avatar) {
         throw new ApiError(400, "Avatar File is Required!!!....")
     }
 
     const user = await User.create({
-        fullname,
+        fullName,
         avatar: avatar.url,
         coverImage: coverImage?.url || "",
         email,
         password,
-        username: username.toLowerCase()
+        userName: userName?.toLowerCase()
     })
 
     const createdUser = await User.findById(user._id).select(
@@ -84,4 +110,92 @@ const registerUser = asyncHandeler(async (req, res) => {
 
 })
 
-export default registerUser
+const loginUser = asyncHandeler(async (req, res) => {
+    // WHAT ALL THINGS TO DO WHEN LOGIN
+    // 1.TAKE DATA FROM REQ,BODY
+    // 2.USERNAME / EMAIL, PASSWORD
+    // 3.FIND USER
+    // 4.IF EMAIL IS NOT REGISTERED (SIGN-UP{REGISTER})
+    // 5.USERNAME / EMAIL / PASSWORD WRONG
+    // 6.IF EVERYTHIGN VERRIFIED THEN GRANT THE USER BOTH ACCESS AND REFRESH TOKEN
+    // 7.SENT TOKENS IN COKIES
+
+    // 1.TAKE DATA FROM REQ,BODY
+    const { userName, email, password } = req.body;
+
+    // 2.USERNAME / EMAIL, PASSWORD
+    if (!userName && !email) {
+        throw new ApiError(400, "Username  or email is Required.");
+    }
+
+    // 3.FIND USER
+    // 4.IF EMAIL IS NOT REGISTERED (SIGN-UP{REGISTER})
+    const user = await User.findOne({
+        $or: [{ userName }, { email }]
+    })
+
+    if (!user) {
+        throw new ApiError(404, "User does not exist.");
+    }
+
+    const isPasswordCorrect = await user.isPasswordCorrect(password);
+
+
+    // 5.USERNAME / EMAIL / PASSWORD WRONG
+    if (!isPasswordCorrect) {
+        throw new ApiError(401, "Wrong Credentials!!..");
+    }
+    // 6.IF EVERYTHIGN VERRIFIED THEN GRANT THE USER BOTH ACCESS AND REFRESH TOKEN
+    const { accessToken, refreshToken } = await generateAccessAndRefreshToken(user._id)
+
+
+    const loggedInUser = await User.findOne(user._id).select("-password -refreshToken")
+
+    // JUST AN OBJECT, BY WHICH ONLY SERVER CAN MODIFY OUR COOKIES.
+    const options = {
+        httpOnly: true,
+        secure: true
+    }
+
+    return refreshToken
+        .status(200)
+        .cookie("accessToken", accessToken, options)
+        .cookie("refreshToken", refreshToken, options)
+        .json(
+            200,
+            {
+                user: loggedInUser, accessToken, refreshToken
+            },
+            "User LogginIn succcessfully."
+        )
+})
+
+const logoutUser = asyncHandeler(async (req, res) => {
+    // STEPS -> 
+    // CLEAR COOKIES
+    // CLEAR TOKENS
+
+    await User.findByIdAndDelete(
+        req.user._id,
+        {
+            $set: {
+                refreshToken: undefined
+            }
+        },
+        {
+            new: true
+        }
+    )
+    const options = {
+        httpOnly: true,
+        secure: true
+    }
+
+    return res
+        .status(200)
+        .clearCookie("accessToken", options)
+        .clearCookie("refreshToken", options)
+        .json(new ApiResponse(200, {}, "User logged out successfully."))
+})
+
+export { registerUser, loginUser, logoutUser };

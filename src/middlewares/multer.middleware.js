@@ -6,7 +6,10 @@ const storage = multer.diskStorage({//jo file hum uswer se upload krwayenge usko
     },
     filename: function (req, file, cb) {
         cb(null, file.originalname)
+        console.log(req.files);
     }
 })
 
-export const upload = multer({ storage: storage })
+
+
+export const upload = multer({ storage })
